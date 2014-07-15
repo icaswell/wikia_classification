@@ -1,3 +1,28 @@
+"""
+File: test_classifiers.py
+
+Author: Robert Elwell and Isaac Caswell
+Created: [Unknown, but modifications by Isaac starting July 1]
+
+Usage:
+  i. command line:
+  $  python test_classifiers.py [--class-file class_file] [--features-file features_file] [--verbose]
+  
+  ii. from within a script:
+  import test_classifiers as tc
+  tc.get_classifier_accuracies(features_file [,class_file [, verbose]])
+
+
+Functionality: Tests a variety of classifiers on wikia data, using leave out one cross validation, and returns their 
+accuracies, runtimes, and individual predictions (in case the client wants to experiment with ensemble classifiers).
+class-file is a mapping of wikia IDs to their hand labeled class.
+feature-file is a mapping of (lots of) wikia ids to word features, automatically generated via extract_wiki_data.py 
+
+Documentation by Isaac, so there is room for error in my interpretation.
+"""
+
+
+
 import traceback
 import time
 from  __init__ import vertical_labels, Classifiers
@@ -7,6 +32,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from multiprocessing import Pool
 from argparse import ArgumentParser, FileType
 import numpy as np
+from sklearn.linear_model import RandomizedLogisticRegression
+
+
+# constants:
+
+# USE_TOP_N_FEATURES: the amount of features to keep after feature selection
+USE_TOP_N_FEATURES = 1000 
 
 def get_args():
     ap = ArgumentParser()
@@ -22,6 +54,31 @@ def main():
     """
     args = get_args()
     print get_classifier_accuracies(args.features_file, args.class_file, args.verbose)
+
+
+def select_most_important_features(training_data, actual_labels, N_features = USE_TOP_N_FEATURES): # Added by Isaac
+    """
+    performs feature selection on the given data and returns the data as a matrix pruned to the top N_features.
+    :param feature_rows: data matrix for training samples. shape = [n_samples, n_features]
+    :type feature_rows: array-like
+    :param actual_labels: a list where actual_labels[i] is the class (vertical label) of data instance i
+    :type actual_labels: list
+    :param N_features: how many features to select for
+    :type N_features: int
+    """
+    actual_labels = np.array(actual_labels)
+    print actual_labels
+    # training_data = np.array(training_data)
+    print training_data.nonzero()
+
+    randomized_logistic = RandomizedLogisticRegression()
+    if N_features:
+        randomized_logistic.fit(training_data, actual_labels) 
+        top_N_features = np.argsort(randomized_logistic.scores_)[0:N_features]
+        lrther
+        return training_data[:, top_N_features]
+    else:
+        return randomized_logistic.fit_transform(training_data, actual_labels)
 
 
 def get_classifier_accuracies(features_file, class_file = None, verbose = False):
@@ -57,21 +114,24 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = False)
                                    [line.decode(u'utf8').strip().split(u',') for line in features_file]
                                    if int(splt[0]) in [v for g in groups.values() for v in g]  # only in group for now
                                    ])
-
+    
 
     if verbose: # --Isaac
         print u"Vectorizing..."
     vectorizer = TfidfVectorizer()
-    feature_rows = wid_to_features.values()
+    data = [(str(wid), i) for i, (key, wids) in enumerate(groups.items()) for wid in wids]
+    wid_to_class = dict(data)
     feature_keys = wid_to_features.keys()
+    feature_rows = wid_to_features.values()
     vectorizer.fit_transform(feature_rows)
+    #Note: using vectorizer.transform() so often may be a wee bit inefficient.... 
+    feature_rows = select_most_important_features(vectorizer.transform(feature_rows), [wid_to_class[str(wid)] for wid in feature_keys]) # Added by Isaac
+    vectorizer.fit_transform(feature_rows) # Refit is now that ... uh... TODO figure this sh8 out
 
     loo_args = []
 
     if verbose: # --Isaac
         print u"Prepping leave-one-out data set..."
-    data = [(str(wid), i) for i, (key, wids) in enumerate(groups.items()) for wid in wids]
-    wid_to_class = dict(data)
     for i in range(0, len(feature_rows)):
         feature_keys_loo = [k for k in feature_keys]
         feature_rows_loo = [f for f in feature_rows]
