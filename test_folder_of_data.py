@@ -53,6 +53,8 @@ LANGUAGE_NAME_TO_CODE = {"German": "de",
                          "Spanish": "es"
                          }
 
+LANGUAGES_TO_ITERATE_OVER = ["German", "English", "Portuguese", "Spanish"] #,"Russian", "Polish", "Japanese", "French", "Chinese"]
+
 
 def get_args():
     ap = ArgumentParser()
@@ -177,18 +179,20 @@ def main():
         if filename == ".DS_Store": # macs are odd
             print "Encountered .DS_Store file...skipping"
             continue
-
         
+        language_name = filename.split('-')[1].split('.')[0].strip()
+        if language_name not in LANGUAGE_NAME_TO_CODE.keys():
+            print "WARNING BAD BAD!: Encountered classfile for language %s, for which we have not extracted features.  Skipping."%language_name
+
+        if language_name not in LANGUAGES_TO_ITERATE_OVER:
+            continue
+
         if N_files_read <=DEBUG_SKIP:
             continue
         else:
             N_datasets +=1
 
-        language_name = filename.split('-')[1].split('.')[0].strip()
-        if language_name != "German":
-            continue#TODO REMOVE
-        if language_name not in LANGUAGE_NAME_TO_CODE.keys():
-            print "WARNING BAD BAD!: Encountered classfile for language %s, for which we have not extracted features.  Skipping."%language_name
+
 
         # note that, since we call the transform function directly, there is no need for
         # an outfile.  This saves time and space!
@@ -197,7 +201,7 @@ def main():
 
         print "Testing classifier accuracy for %s: "%language_name
         # test.get_classifier_accuracies returns a list of tuples of the form (name_of_classifier, pct_accuracy, runtime)
-        accuracies = test.get_classifier_accuracies(class_file=class_file, features_file = features_file, verbose = False)
+        accuracies = test.get_classifier_accuracies(class_file=class_file, features_file = features_file, verbose = False) #TODO: Make Thread (would require rewriting 'append' statements)
         accuracies = [tup for tup in accuracies if tup !=None] # I don't where the None entry came from, but it was messing things up
         results.append(accuracies)
         # dataset_language.append(language_name_to_code[language_name])
