@@ -64,7 +64,7 @@ def get_args():
     ap = ArgumentParser()
     ap.add_argument('--class-file', type=FileType('r'), dest='class_file')
     ap.add_argument('--features-file', type=FileType('r'), dest='features_file')
-    ap.add_argument('--verbose', dest = 'verbose', action = 'store_true', default = False)
+    ap.add_argument('--verbose', dest = 'verbose', type=int, default = 1)
     ap.add_argument('--feature-select', dest = 'feature_select', type=int, default = USE_TOP_N_FEATURES)
     ap.add_argument('--sample-size', dest = 'sample_size', type=int, default = PRUNE_SET_FOR_TESTING)
     return ap.parse_args()
@@ -130,7 +130,7 @@ def do_feature_selection(vectorizer, feature_rows, actual_labels, verbose, N_fea
 
 
 
-def get_classifier_accuracies(features_file, class_file = None, verbose = False, return_ensemble_materials = False, feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING):
+def get_classifier_accuracies(features_file, class_file = None, verbose = 0, return_ensemble_materials = False, feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING):
     """same functionality as main(), but easier to call from wrapper script.   This function
     to be called in test_folder_of_data.py
     
@@ -191,16 +191,6 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = False,
     # Note that the vectorizer splits tokens like "TOP_ART:zombi_brain" into two tokens.  I think this is OK, though. --Isaac
     vectorizer.fit_transform(feature_rows) # NB: as far as I can tell, it makes more sense to have vectorizer.fit(feature_rows), but I'll trust Robert more here...
     verbose_print("Dataset has %s features"%vectorizer.idf_.shape, verbose)
-    if feature_select: # Added by Isaac. NB: amt of features is originally around 50k for English.
-        vectorizer, feature_rows = do_feature_selection(vectorizer, feature_rows, \
-                                                            actual_labels = [wid_to_class[str(wid)] for wid in feature_keys], verbose = verbose, N_features = feature_select)
-        #if verbose:
-        #    print u"Performing feature selection...."
-        #feats_to_keep_id = select_most_important_features(vectorizer.transform(feature_rows), [wid_to_class[str(wid)] for wid in feature_keys])
-        #feats_to_keep_name = np.array(vectorizer.get_feature_names())[feats_to_keep_id]
-        #feature_rows = [" ".join([feat for feat in row.split(" ") if feat in feats_to_keep_name]) for row in feature_rows]
-        #vectorizer = TfidfVectorizer() # Refit now that we have a new feature set
-        #vectorizer.fit_transform(feature_rows)
 
     loo_args = []
 
@@ -213,10 +203,15 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = False,
         loo_class = wid_to_class[str(feature_keys[i])]
         del feature_rows_loo[i]
         del feature_keys_loo[i]
+        vectorizer_loo = vectorizer
+        if feature_select: # Added by Isaac. 
+            vectorizer_loo, feature_rows_loo = do_feature_selection(vectorizer, feature_rows_loo, \
+                                                                actual_labels = [wid_to_class[str(wid)] for wid in feature_keys_loo], verbose = verbose, N_features = feature_select)
         loo_args.append(
-            (vectorizer.transform(feature_rows),                # train
-             [wid_to_class[str(wid)] for wid in feature_keys],  # classes for training set
-             vectorizer.transform([loo_row]),                   # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
+            (vectorizer_loo.transform(feature_rows_loo),            # train  TODO: should this not be feature_keys_loo ?????
+             [wid_to_class[str(wid)] for wid in feature_keys_loo],  # classes for training set
+             # changed to vectorizer_loo  --Isaac
+             vectorizer_loo.transform([loo_row]),               # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
              [loo_class]                                        # expected class
              )
         )
@@ -235,6 +230,7 @@ def classify(arg_tup):
         expectations = []
         prediction_probabilities = [] # where prediction_probabilities[i][j] is the probability that instance i is of class j --Isaac
         for i, (training, classes, predict, expected) in enumerate(loo):
+            
             # predict is the feature vectore corresponding to a single data instance, i.
             verbose_print("%s predicting data instance %s..."%(name, i), verbose, 2)
             clf.fit(training.toarray(), classes)
