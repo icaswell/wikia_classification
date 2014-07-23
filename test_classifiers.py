@@ -23,11 +23,12 @@ to interpret, if you want to go in and look at the features to see what's import
 PARAMETERS:
 class-file is a mapping of wikia IDs to their hand labeled class.
 feature-file is a mapping of (lots of) wikia ids to word features, automatically generated via extract_wiki_data.py 
-
+feature-select: 0 if no feature-selection to be done.  Otherwise, the amount of features to leave after feature selection. 
 
 BUGS/PROBLEMS:
   -always gives "AttributeError: log" error, although this does not appear to hamper performance
-  - often (always?) gives "SVD did not converge" error
+  -often (always?) gives "SVD did not converge" error
+  -feature selection appears ont to work.  Uncertain whether a bug or  simply not appropriate algorithmically.
 TODO:
   -incorporate in argument for extra_preprocessed_features.  This file would contain features such as page views, 
   which can be added into the dataset without the text processing that is done here.
@@ -47,7 +48,7 @@ from multiprocessing import Pool
 from argparse import ArgumentParser, FileType
 import numpy as np
 from sklearn.linear_model import RandomizedLogisticRegression
-
+import random
 # constants:
 
 # USE_TOP_N_FEATURES: the amount of features to keep after feature selection.  If this is 0, no feature selection is performed.
@@ -102,35 +103,43 @@ def select_most_important_features(training_data, actual_labels, N_features, pen
     :type actual_labels: list
     :param N_features: how many features to select for
     :type N_features: int
-    :return: array of the top most important features.
-    :rtype: array
+    :return: [0]: array of the top most important features. [1]: the weights of those features
+    :rtype: tuple
     
     """
     actual_labels = np.array(actual_labels)
 
     randomized_logistic = RandomizedLogisticRegression()
-
-    randomized_logistic.fit(training_data, actual_labels) 
-    top_N_features = np.argsort(randomized_logistic.scores_)[0:N_features]
-    return top_N_features
     
+    randomized_logistic.fit(training_data, actual_labels) 
+    # top_N_features = np.argsort(randomized_logistic.scores_)[0:N_features]
+    top_N_features = np.argsort(randomized_logistic.scores_)[-N_features:] #caught this on 22 July, 4:25pm.  whoops.
+    return (top_N_features, randomized_logistic.scores_[top_N_features])
+
+
+
+
 
 def do_feature_selection(vectorizer, feature_rows, actual_labels, verbose, N_features):
     """
     see documentation in select_most_important_features
     """
-    verbose_print("Performing feature selection....", verbose)
-    feats_to_keep_id = select_most_important_features(vectorizer.transform(feature_rows), actual_labels, N_features = N_features)
-    feats_to_keep_name = np.array(vectorizer.get_feature_names())[feats_to_keep_id]
-    feature_rows = [" ".join([feat for feat in row.split(" ") if feat in feats_to_keep_name]) for row in feature_rows]
-    vectorizer = TfidfVectorizer() # Refit now that we have a new feature set
-    vectorizer.fit_transform(feature_rows)
-    verbose_print("Pared down to %s features!"%N_features, verbose)
+    if not N_features:
+        verbose_print("No feature selection", verbose, 2)
+    else:
+        verbose_print("Performing feature selection....", verbose)
+        feats_to_keep_id, feat_weights = select_most_important_features(vectorizer.transform(feature_rows), actual_labels, N_features = N_features)
+        feats_to_keep_name = np.array(vectorizer.get_feature_names())[feats_to_keep_id]
+        feature_rows = [" ".join([feat for feat in row.split(" ") if feat in feats_to_keep_name]) for row in feature_rows]
+        vectorizer = TfidfVectorizer() # Refit now that we have a new feature set
+        vectorizer.fit_transform(feature_rows)
+        verbose_print("Pared down to %s features!"%N_features, verbose)
     return vectorizer, feature_rows
 
 
 
-def get_classifier_accuracies(features_file, class_file = None, verbose = 0, return_ensemble_materials = False, feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING):
+def get_classifier_accuracies(features_file, class_file = None, verbose = 0, return_ensemble_materials = False, \
+                                  feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING, return_training_error = False):
     """same functionality as main(), but easier to call from wrapper script.   This function
     to be called in test_folder_of_data.py
     
@@ -150,6 +159,7 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
                                       If you just want accuracy and speed of classifiers, set to false.
     :type return_ensemble_materials: bool
     """
+    global RETURN_ENSEMBLE_MATERIALS
     RETURN_ENSEMBLE_MATERIALS = return_ensemble_materials # TODO: fix this nonsense
     if class_file:
         groups = defaultdict(list)
@@ -162,6 +172,7 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
             if splt[0] != '': # added by Isaac
                 groups[splt[1]].append(int(splt[0]))
     else:
+        print "Whoops you done messed up real good"
         groups = vertical_labels
 
     verbose_print(u"Loading CSV...", verbose)
@@ -169,19 +180,21 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
 
     wid_to_features = OrderedDict([(splt[0], u" ".join(splt[1:])) for splt in
                                    [line.decode(u'utf8').strip().split(u',') for line in features_file]
-                                   if int(splt[0]) in [v for g in groups.values() for v in g]  # only in group for now (Robert wrote this.) 
+                                   if int(splt[0]) in [v for g in groups.values() for v in g]  # only in group for now (Robert wrote this comment.) 
                                    ])
     verbose_print(u"Dataset has %s data instances"%(len(wid_to_features.values())), verbose)
-    
     if sample_size: #make the dataset into a manageable size for testing.
-        for i, key in enumerate(wid_to_features.keys()):
-            if i>=sample_size:
-                del wid_to_features[key]
-        verbose_print(u"Pruned dataset to %s instances, for ease of testing"%(sample_size), verbose)
+        doomed_keys = wid_to_features.keys()
+        random.seed(9) # just for comparative testing porpoises
+        random.shuffle(doomed_keys)
+        doomed_keys = doomed_keys[sample_size:]
+        for doomed_key in doomed_keys:
+            del wid_to_features[doomed_key]
 
+        verbose_print(u"Pruned dataset to %s instances"%(sample_size), verbose)
+    
 
     verbose_print(u"Vectorizing...", verbose)
-
     data = [(str(wid), i) for i, (key, wids) in enumerate(groups.items()) for wid in wids]
     wid_to_class = dict(data)
     feature_keys = wid_to_features.keys()
@@ -191,7 +204,6 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
     # Note that the vectorizer splits tokens like "TOP_ART:zombi_brain" into two tokens.  I think this is OK, though. --Isaac
     vectorizer.fit_transform(feature_rows) # NB: as far as I can tell, it makes more sense to have vectorizer.fit(feature_rows), but I'll trust Robert more here...
     verbose_print("Dataset has %s features"%vectorizer.idf_.shape, verbose)
-
     loo_args = []
 
     verbose_print(u"Prepping leave-one-out data set...", verbose)
@@ -204,22 +216,39 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
         del feature_rows_loo[i]
         del feature_keys_loo[i]
         vectorizer_loo = vectorizer
+        train_labels_loo = [wid_to_class[str(wid)] for wid in feature_keys_loo] # Isaac
+
+        if loo_class not in train_labels_loo:
+            print "Unique element with class %s. Skipping this cross validation cross section."%loo_class
+            continue
         if feature_select: # Added by Isaac. 
             vectorizer_loo, feature_rows_loo = do_feature_selection(vectorizer, feature_rows_loo, \
-                                                                actual_labels = [wid_to_class[str(wid)] for wid in feature_keys_loo], verbose = verbose, N_features = feature_select)
+                                                                   actual_labels = [wid_to_class[str(wid)] for wid in feature_keys_loo], verbose = verbose, N_features = feature_select)
+
         loo_args.append(
-            (vectorizer_loo.transform(feature_rows_loo),            # train  TODO: should this not be feature_keys_loo ?????
-             [wid_to_class[str(wid)] for wid in feature_keys_loo],  # classes for training set
+            (vectorizer_loo.transform(feature_rows_loo),            # train  TODO: should this not be feature_rows_loo ?????
+             train_labels_loo,                                      # classes for training set TODO: should be feeatures_keys_loo
              # changed to vectorizer_loo  --Isaac
-             vectorizer_loo.transform([loo_row]),               # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
-             [loo_class]                                        # expected class
+             vectorizer_loo.transform([loo_row]),                   # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
+             [loo_class]                                            # expected class
              )
         )
+
+
 
     print u"Running leave-one-out cross-validation..."
 
     p = Pool(processes=8)
-    return p.map_async(classify, [((name, clf), loo_args, verbose) for name, clf in Classifiers.each_with_name()]).get()
+    #QDA always gave errors and crashed
+    return_value = p.map_async(classify, [((name, clf), loo_args, verbose) for name, clf in Classifiers.each_with_name() if name != u"QDA"]).get()
+    if return_training_error:
+        X = vectorizer.transform(feature_rows)
+        y = [wid_to_class[str(wid)] for wid in feature_keys]
+        training_error = p.map_async(get_training_error, [((name, clf), X, y, verbose) for name, clf in Classifiers.each_with_name() if name != "QDA"]).get()
+        return_value = (return_value, training_error)
+    
+    return return_value
+
 
 
 def classify(arg_tup):
@@ -230,11 +259,11 @@ def classify(arg_tup):
         expectations = []
         prediction_probabilities = [] # where prediction_probabilities[i][j] is the probability that instance i is of class j --Isaac
         for i, (training, classes, predict, expected) in enumerate(loo):
-            
             # predict is the feature vectore corresponding to a single data instance, i.
             verbose_print("%s predicting data instance %s..."%(name, i), verbose, 2)
             clf.fit(training.toarray(), classes)
-            prediction_probabilities.append(clf.predict_proba(predict.toarray())) # --Isaac (for ensemble classifier)
+            if RETURN_ENSEMBLE_MATERIALS:
+                prediction_probabilities.append(np.squeeze(clf.predict_proba(predict.toarray()))) # --Isaac (for ensemble classifier)
             predictions.append(clf.predict(predict.toarray()))
             #TODO: Try: (should be same, but isn't always. unsure why.)  
             # predictons.append([np.argmax(prediction_probabilities[i])])
@@ -259,6 +288,41 @@ def classify(arg_tup):
     except Exception as e:
             print e
             print traceback.format_exc()
+
+
+
+
+def get_training_error(arg_tup):
+    """
+    This try/except structure is useful when testing for instance with QDA, which always gave errors and crashed.
+    right now actually returns the training accuracy, rather than error, because it seemed more useful.
+    """
+    try:
+        (name, clf), X, y, verbose = arg_tup # Added verbose --Isaac
+        N = len(y)
+        predictions = []
+        verbose_print("Predicting training error for %s..."%(name), verbose, 2)
+        clf.fit(X.toarray(), y)
+        predictions = clf.predict(X.toarray())
+        
+        correct_vec = [predicted == actual for predicted, actual in zip(predictions, y)] # decomposition added by Isaac 
+        # error = 1.0 - sum(correct_vec)*1.0/N # result of decomp
+        error = sum(correct_vec)*1.0/N # result of decomp
+        
+        verbose_print("%s: \n\training error:%s"%(name, error), verbose, 2)
+        # See note on return statement for classify().
+        prediction_probabilities = clf.predict_proba(X.toarray())
+
+        if RETURN_ENSEMBLE_MATERIALS:
+            return name, error, list(prediction_probabilities), y
+        else:
+            return name, error
+    except Exception as e:
+        print e
+        print traceback.format_exc()
+
+
+
 
 
 if __name__ == u'__main__':
