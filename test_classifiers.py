@@ -28,12 +28,12 @@ feature-select: 0 if no feature-selection to be done.  Otherwise, the amount of 
 BUGS/PROBLEMS:
   -always gives "AttributeError: log" error, although this does not appear to hamper performance
   -often (always?) gives "SVD did not converge" error
-  -feature selection appears ont to work.  Uncertain whether a bug or  simply not appropriate algorithmically.
+  -feature selection appears not to work.  source not certain.
 TODO:
   -incorporate in argument for extra_preprocessed_features.  This file would contain features such as page views, 
   which can be added into the dataset without the text processing that is done here.
 
-Documentation by Isaac, so there is room for error in my interpretation.
+Documentation by Isaac, so there is room for error in my interpretation of Robert's parts.
 """
 
 
@@ -112,9 +112,9 @@ def select_most_important_features(training_data, actual_labels, N_features, pen
     randomized_logistic = RandomizedLogisticRegression()
     
     randomized_logistic.fit(training_data, actual_labels) 
-    # top_N_features = np.argsort(randomized_logistic.scores_)[0:N_features]
+    #top_N_features = np.argsort(randomized_logistic.scores_)[0:N_features]
     top_N_features = np.argsort(randomized_logistic.scores_)[-N_features:] #caught this on 22 July, 4:25pm.  whoops.
-    return (top_N_features, randomized_logistic.scores_[top_N_features])
+    return (top_N_features)
 
 
 
@@ -128,21 +128,40 @@ def do_feature_selection(vectorizer, feature_rows, actual_labels, verbose, N_fea
         verbose_print("No feature selection", verbose, 2)
     else:
         verbose_print("Performing feature selection....", verbose)
-        feats_to_keep_id, feat_weights = select_most_important_features(vectorizer.transform(feature_rows), actual_labels, N_features = N_features)
+        feats_to_keep_id = select_most_important_features(vectorizer.transform(feature_rows), actual_labels, N_features = N_features)
         feats_to_keep_name = np.array(vectorizer.get_feature_names())[feats_to_keep_id]
-        feature_rows = [" ".join([feat for feat in row.split(" ") if feat in feats_to_keep_name]) for row in feature_rows]
+        pp = vectorizer.build_analyzer()
+        #pp = vectorizer.build_preprocessor() # if this used, use pp(row).split(" ") in comprehension below
+
+        feature_rows = [" ".join([feat for feat in pp(row) if feat in feats_to_keep_name]) for row in feature_rows]
+
         vectorizer = TfidfVectorizer() # Refit now that we have a new feature set
         vectorizer.fit_transform(feature_rows)
         verbose_print("Pared down to %s features!"%N_features, verbose)
     return vectorizer, feature_rows
 
+def add_numeric_features(X_train, wid_to_numeric_features):
+    """
+    NOTE: THIS function only works if tfidf_vectorizer preserves the order of its argument, feature_rows.  
+    Otherwise we are doomed and there is no way (except a really silly hacky way I'll describe later maybe)
+    of adding in numeric features.
+    """
+    N_numeric_feats = len(wid_to_numeric_features[wid_to_numeric_features.keys()[0]])
+    augmented_shape = (X_train.shape[0], X_train.shape[1] + N_numeric_feats)
+    X_train._shape = (augmented_shape)
+    for i, wid in enumerate(wid_to_numeric_features):
+        feats = wid_to_numeric_features[wid]
+        X_train[i, -N_numeric_feats:] = feats
 
+    return X_train
 
-def get_classifier_accuracies(features_file, class_file = None, verbose = 0, return_ensemble_materials = False, \
-                                  feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING, return_training_error = False):
+def get_classifier_accuracies(features_file, numeric_features_file = None, class_file = None, verbose = 0, return_ensemble_materials = False, \
+                                  feature_select = USE_TOP_N_FEATURES, sample_size = PRUNE_SET_FOR_TESTING, \
+                                  return_training_error = False, use_numeric_features=True):
     """same functionality as main(), but easier to call from wrapper script.   This function
     to be called in test_folder_of_data.py
     
+
     If you just want accuracy and time of execution, call with return_ensemble_materials=false.
     If you want the predictions and labels for each data instance oer classifier, call with return_ensemble_materials=true.
     created by Isaac
@@ -150,7 +169,11 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
     :param class_file: a mapping of wikia IDs to their hand labeled class.
     :type class_file: file ('filestream'? 'file object?' I'm bad with terminology.)
     :param features_file: a mapping of (lots of) wikia ids to word features, automatically generated via extract_wiki_data.py
-    :type features_file: file (...yeah)
+      Note: each line of features_file is of the form "1234,spiderman,silk,hand" etc. 
+    :type features_file: csv file
+    :param numeric_features_file: a mapping of wikia ids to numeric (reaor integer valued) features, automatically generated via extract_wiki_data.py
+      Note: each line of features_file is of the form "1234,12,32,99,123.5" etc. 
+    :type numeric_features_file: csv file
     :param verbose: should the function say useless yet comforting things as it runs?
     :type verbose: bool
     :param return_ensemble_materials: should the return value include predictions and labels for each data instance per classifier?
@@ -159,6 +182,10 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
                                       If you just want accuracy and speed of classifiers, set to false.
     :type return_ensemble_materials: bool
     """
+
+
+    verbose_print("%s numeric (preprocessed) features...."%("Including" if use_numeric_features else "OMITTING"), verbose, 1)
+
     global RETURN_ENSEMBLE_MATERIALS
     RETURN_ENSEMBLE_MATERIALS = return_ensemble_materials # TODO: fix this nonsense
     if class_file:
@@ -172,16 +199,27 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
             if splt[0] != '': # added by Isaac
                 groups[splt[1]].append(int(splt[0]))
     else:
-        print "Whoops you done messed up real good"
+        print "Whoops you done messed up real good.  You don't never want to be forgetting a class file."
         groups = vertical_labels
 
     verbose_print(u"Loading CSV...", verbose)
 
 
+    # Note: after [v for g in groups.values() for v in g]  Robert wrote 'only in group for now',  Why did he say 'for now'?
+
     wid_to_features = OrderedDict([(splt[0], u" ".join(splt[1:])) for splt in
                                    [line.decode(u'utf8').strip().split(u',') for line in features_file]
-                                   if int(splt[0]) in [v for g in groups.values() for v in g]  # only in group for now (Robert wrote this comment.) 
+                                   if int(splt[0]) in [v for g in groups.values() for v in g]
                                    ])
+
+
+
+    wid_to_numeric_features = OrderedDict([(splt[0], [float(i) if i != 'None' else 0 for i in splt[1:]]) for splt in
+                                   [line.strip().split(u',') for line in numeric_features_file]
+                                   if int(splt[0]) in [v for g in groups.values() for v in g]
+                                   ])
+    assert wid_to_features.keys() == wid_to_numeric_features.keys()
+    #NUMERIC FEATURE_TODO: actually do something with these.
     verbose_print(u"Dataset has %s data instances"%(len(wid_to_features.values())), verbose)
     if sample_size: #make the dataset into a manageable size for testing.
         doomed_keys = wid_to_features.keys()
@@ -190,9 +228,9 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
         doomed_keys = doomed_keys[sample_size:]
         for doomed_key in doomed_keys:
             del wid_to_features[doomed_key]
+            del wid_to_numeric_features[doomed_key]
+        verbose_print(u"Pruned dataset to %s instances"%(len(wid_to_features.keys())), verbose)
 
-        verbose_print(u"Pruned dataset to %s instances"%(sample_size), verbose)
-    
 
     verbose_print(u"Vectorizing...", verbose)
     data = [(str(wid), i) for i, (key, wids) in enumerate(groups.items()) for wid in wids]
@@ -201,9 +239,9 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
     feature_rows = wid_to_features.values()
     vectorizer = TfidfVectorizer()
     
-    # Note that the vectorizer splits tokens like "TOP_ART:zombi_brain" into two tokens.  I think this is OK, though. --Isaac
-    vectorizer.fit_transform(feature_rows) # NB: as far as I can tell, it makes more sense to have vectorizer.fit(feature_rows), but I'll trust Robert more here...
-    verbose_print("Dataset has %s features"%vectorizer.idf_.shape, verbose)
+    # Note that the vectorizer splits tokens like "TOP_ART:zombi_brain" into two tokens.  For this reason I have changed the feature marking into TOP_ART_zombi_brain etc.
+    vectorizer.fit_transform(feature_rows) # NB: as far as I can tell, it makes more sense to have vectorizer.fit(feature_rows), but I'll trust Robert here still...
+    verbose_print("Dataset has %s features"%vectorizer.idf_.shape, verbose) #NOTE: !!! for some machines (computers), like aws I think, one has to write "vectorizer.tfidf.idf_.shape".  No idea why.
     loo_args = []
 
     verbose_print(u"Prepping leave-one-out data set...", verbose)
@@ -225,11 +263,22 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
             vectorizer_loo, feature_rows_loo = do_feature_selection(vectorizer, feature_rows_loo, \
                                                                    actual_labels = [wid_to_class[str(wid)] for wid in feature_keys_loo], verbose = verbose, N_features = feature_select)
 
+
+
+        X_train = vectorizer_loo.transform(feature_rows_loo)
+        predict = vectorizer_loo.transform([loo_row])             # changed to vectorizer_loo  --Isaac        
+        if use_numeric_features:
+            wid_loo = wid_to_numeric_features.keys()[i]        
+            wid_to_numeric_features_loo = wid_to_numeric_features.copy()
+            del wid_to_numeric_features_loo[wid_loo]        
+            X_train = add_numeric_features(X_train, wid_to_numeric_features_loo)
+            predict = add_numeric_features(predict, OrderedDict([(wid_loo, wid_to_numeric_features[wid_loo])]))
+
+        
         loo_args.append(
-            (vectorizer_loo.transform(feature_rows_loo),            # train  TODO: should this not be feature_rows_loo ?????
-             train_labels_loo,                                      # classes for training set TODO: should be feeatures_keys_loo
-             # changed to vectorizer_loo  --Isaac
-             vectorizer_loo.transform([loo_row]),                   # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
+            (X_train,                                               # train  #[source of erstwhile LOOCV bug]
+             train_labels_loo,                                      # classes for training set #[source of erstwhile LOOCV bug]
+             predict,                                               # predict  # The features corresponding to the instance whose label is to be predicted --Isaac
              [loo_class]                                            # expected class
              )
         )
@@ -239,12 +288,17 @@ def get_classifier_accuracies(features_file, class_file = None, verbose = 0, ret
     print u"Running leave-one-out cross-validation..."
 
     p = Pool(processes=8)
-    #QDA always gave errors and crashed
-    return_value = p.map_async(classify, [((name, clf), loo_args, verbose) for name, clf in Classifiers.each_with_name() if name != u"QDA"]).get()
+    #QDA always gave errors and crashed. Linear SVM strted hanging seemingly infinitely even on 12 data instances, and was never good anyways.
+    all_clf = [u"QDA", u"Linear SVM", u"Maximum Entropy", u"LDA", u"Naive Bayes", u"AdaBoost", u"Random_Forest", u"Decision Tree", u"RBF_SVM", u"Nearest Neighbors"] # For reference
+    omit_clf = [u"QDA", u"Linear SVM", u"LDA", u"RBF_SVM", "AdaBoost"] # LDA was never good, and took forever.
+    #omit_clf = list(set(all_clf).difference(set([u"Random_Forest"])))
+    print omit_clf
+    return_value = p.map_async(classify, [((name, clf), loo_args, verbose) for name, clf in Classifiers.each_with_name() if name not in omit_clf]).get()
     if return_training_error:
+        verbose_print("Getting Training Error......", verbose, 1)
         X = vectorizer.transform(feature_rows)
         y = [wid_to_class[str(wid)] for wid in feature_keys]
-        training_error = p.map_async(get_training_error, [((name, clf), X, y, verbose) for name, clf in Classifiers.each_with_name() if name != "QDA"]).get()
+        training_error = p.map_async(get_training_error, [((name, clf), X, y, verbose) for name, clf in Classifiers.each_with_name() if name not in omit_clf]).get()
         return_value = (return_value, training_error)
     
     return return_value
@@ -295,7 +349,7 @@ def classify(arg_tup):
 def get_training_error(arg_tup):
     """
     This try/except structure is useful when testing for instance with QDA, which always gave errors and crashed.
-    right now actually returns the training accuracy, rather than error, because it seemed more useful.
+    NOTE: right now actually returns the training accuracy, rather than error, because it seemed more useful.
     """
     try:
         (name, clf), X, y, verbose = arg_tup # Added verbose --Isaac
@@ -309,7 +363,7 @@ def get_training_error(arg_tup):
         # error = 1.0 - sum(correct_vec)*1.0/N # result of decomp
         error = sum(correct_vec)*1.0/N # result of decomp
         
-        verbose_print("%s: \n\training error:%s"%(name, error), verbose, 2)
+        verbose_print("%s: \n\ttraining accuracy:%s"%(name, error), verbose, 2)
         # See note on return statement for classify().
         prediction_probabilities = clf.predict_proba(X.toarray())
 

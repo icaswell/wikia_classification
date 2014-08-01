@@ -15,8 +15,8 @@ Overview:
 
 Usage: [commnd line]
   #[python extract_wiki_data_all_langs.py] deprecated
-  [python make_features_from_CSV_folder --csv-folder CSV_FOLDER_NAME --outfolder corresponding_feature_data]
-  python test_folder_of_data.py --csv-folder CSV_FOLDER_NAME --features-folder corresponding_feature_data --verbose 1 --feature-select 0 --sample-size 12 --doc-file doc_file
+  [python make_features_from_CSV_folder --csv-folder CSV_datasets --outfolder corresponding_feature_data]
+  python test_folder_of_data.py --csv-folder CSV_datasets --features-folder feats_folder_numeric_test --verbose 2 --feature-select 0 --sample-size 12 --doc-file doc_file --nonumeric
 
 Arguments:
   -classfile_folder: name of a folder (in current directory) of CSV files (classfiles)
@@ -26,7 +26,9 @@ Known bugs/problems:
   invalid value in divide
   -unfortunate name
 """
+import sys
 import time
+import traceback
 import os
 import test_classifiers as test
 #from argparse import ArgumentParser
@@ -37,6 +39,14 @@ import itertools as it
 import scipy.misc as sc
 #import extract_wiki_data_all_langs as ewdal
 from argparse import ArgumentParser
+
+
+LANGUAGES_TO_ITERATE_OVER = ['Chinese', 'German', 'English', 'Portuguese', 'Spanish', 'French', 'Russian', 'Polish', 'Japanese']
+LANGUAGES_TO_ITERATE_OVER = ['English']#'Chinese']#['German', 'Chinese',            'Portuguese', 'Spanish', 'French', 'Russian', 'Polish', 'Japanese']
+#Supported langs: languages I've gotten stemmers and tokenizers working for.
+SUPPORTED_LANGS = ['Danish', 'Dutch', 'English', 'Finnish', 'French', 'German', 'Hungarian', 'Italian', 'Norwegian', 'Portuguese', 'Romanian', 'Russian', 'Spanish', 'Swedish', 'Chinese']
+#LANGUAGES_TO_ITERATE_OVER = set(LANGUAGES_TO_ITERATE_OVER).intersection(set(SUPPORTED_LANGS))
+
 
 ENSEMBLES_TO_DISPLAY = 15
 #GET_DATASET == 1  #if the features are to be extracted by the script (extract_wiki_ids_all_langs) #can't do this because it's multithreaded
@@ -65,11 +75,6 @@ LANGUAGE_NAME_TO_CODE = {"German": "de",
                          "es": "Spanish"
                          }
 """
-LANGUAGES_TO_ITERATE_OVER = ['Chinese', 'German', 'English', 'Portuguese', 'Spanish', 'French', 'Russian', 'Polish', 'Japanese']
-#LANGUAGES_TO_ITERATE_OVER = ['German']#'Chinese', 'German']#, 'English', 'Portuguese', 'Spanish', 'French', 'Russian', 'Polish', 'Japanese']
-#Supported langs: languages I've gotten stemmers and tokenizers working for.
-SUPPORTED_LANGS = ['Danish', 'Dutch', 'English', 'Finnish', 'French', 'German', 'Hungarian', 'Italian', 'Norwegian', 'Portuguese', 'Romanian', 'Russian', 'Spanish', 'Swedish', 'Chinese']
-LANGUAGES_TO_ITERATE_OVER = set(LANGUAGES_TO_ITERATE_OVER).intersection(set(SUPPORTED_LANGS))
 
 
 def get_args():
@@ -80,6 +85,7 @@ def get_args():
     ap.add_argument('--verbose', dest = 'verbose', type = int, default = 1)
     ap.add_argument('--feature-select', dest = 'feature_select', type = int, default = 1000)
     ap.add_argument('--sample-size', dest = 'sample_size', type = int, default = 1000)
+    ap.add_argument('--nonumeric', dest = 'use_numeric_features', action="store_false", default = True)
     return ap.parse_args()
 
 
@@ -88,6 +94,8 @@ def display_stats(results, dataset_language, clf_names, training_errors):
     returns a string which describes in human readable way the performance of different classifiers.
     Returns a string rather than printing to the console for the purpose that one may also write to 
     a file, to keep a log of the results.
+
+    Note: right now I'm actually reporting training accuracy, not training error.
     
     :param results: results[i][j] is, for language (dataset) i, a tuple of (clf name, LOOCV clf accuracy for that language)
     :type results: list of lists of tuples
@@ -102,37 +110,43 @@ def display_stats(results, dataset_language, clf_names, training_errors):
     #First, let's look at the best cassifiers, on average:
 
     return_string = ""
+    try:
+        N_clfs = len(training_errors) # Should be around 9
 
-    N_clfs = len(training_errors) # Should be around 9
+        accuracies = [[tup[1] for tup in dataset] for dataset in results]
+        avg_acc = [np.mean(np.array(i)) for i in zip(*accuracies)]
+        sd_acc = [np.std(np.array(i)) for i in zip(*accuracies)]
 
-    accuracies = [[tup[1] for tup in dataset] for dataset in results]
-    avg_acc = [np.mean(np.array(i)) for i in zip(*accuracies)]
-    sd_acc = [np.std(np.array(i)) for i in zip(*accuracies)]
-
-    training_errors_avg =  {}
-    for language_data in training_errors: # get average training error 
-        for clf_data in language_data:
-            if clf_data[0] not in training_errors_avg:
-                training_errors_avg[clf_data[0]] = 0
-            training_errors_avg[clf_data[0]] += clf_data[1]/N_clfs
+        training_errors_avg =  {}
+        for language_data in training_errors: # get average training error 
+            for clf_data in language_data:
+                if clf_data[0] not in training_errors_avg:
+                    training_errors_avg[clf_data[0]] = 0
+                training_errors_avg[clf_data[0]] += clf_data[1]/N_clfs
 
 
-    sorted_avg_acc_and_name = sorted(zip(avg_acc, clf_names, sd_acc), reverse=True)
-    return_string += "Average performance, SD and training error: \n"
-    for tup in sorted_avg_acc_and_name:
-        return_string += u"\t%s %.1f%% \u00B1 %.1f"%(tup[1] + (17 - len(tup[1]))*" ", tup[0]*100, tup[2]*100) # where 17 is the length of the longest name, plus 1, for prettiness of formatting
-        return_string += u"   TE:%.1f%%\n"%(training_errors_avg[tup[1]]*100)
-   
+        sorted_avg_acc_and_name = sorted(zip(avg_acc, clf_names, sd_acc), reverse=True)
+        return_string += "Average performance, SD and training error: \n"
+        for tup in sorted_avg_acc_and_name:
+            return_string += u"\t%s %.1f%% \u00B1 %.1f"%(tup[1] + (17 - len(tup[1]))*" ", tup[0]*100, tup[2]*100) # where 17 is the length of the longest name, plus 1, for prettiness of formatting
+            return_string += u"   TA:%.1f%%\n"%(training_errors_avg[tup[1]]*100)
+            
+            
+        # Now, let's compare classifiers between different languages:
+        #language: [best classifiers]
+        return_string += "\nLineup per language: \n"
+        lineup_per_language = [sorted(zip(acc, clf_names), reverse=True) for acc in accuracies] 
+        for i in range(len(dataset_language)):
+            return_string += "%s: "%dataset_language[i]
+            for tup in lineup_per_language[i]:
+                return_string += "%s (%.3f), "%(tup[1], tup[0][0])
+            return_string += "\n"
+            
+    except Exception as e:
+        return_string += str(e)
+        return_string +="\n"
+        return_string += str(traceback.format_exc())
     
-    # Now, let's compare classifiers between different languages:
-    #language: [best classifiers]
-    return_string += "\nLineup per language: \n"
-    lineup_per_language = [sorted(zip(acc, clf_names), reverse=True) for acc in accuracies] 
-    for i in range(len(dataset_language)):
-        return_string += "%s: "%dataset_language[i]
-        for tup in lineup_per_language[i]:
-            return_string += "%s (%.3f), "%(tup[1], tup[0][0])
-        return_string += "\n"
     return return_string
     
 
@@ -208,31 +222,35 @@ def display_ensemble_accuracies(ensemble_scores, clf_names, N_datasets, ensemble
     """
     # normalize ensemble_scores and ensemble_training_accs and split dictionary into lists of values and keys (for sorting):
     return_string = ""
+    try:
+        ensemble_accs = []
+        ensemble_ids = ensemble_scores.keys()
+        for key in ensemble_ids:
+            ensemble_accs.append(ensemble_scores[key]*1.0 / N_datasets)
 
-    ensemble_accs = []
-    ensemble_ids = ensemble_scores.keys()
-    for key in ensemble_ids:
-        ensemble_accs.append(ensemble_scores[key]*1.0 / N_datasets)
-
-    ensemble_training_accs = []
-    ensemble_training_scores_ids = ensemble_training_scores.keys()
-    for key in ensemble_training_scores_ids:
-        ensemble_training_accs.append(ensemble_training_scores[key]*1.0 / N_datasets)
-
-    
-    std_ensemble_scores = np.argsort(ensemble_accs)
+        ensemble_training_accs = []
+        ensemble_training_scores_ids = ensemble_training_scores.keys()
+        for key in ensemble_training_scores_ids:
+            ensemble_training_accs.append(ensemble_training_scores[key]*1.0 / N_datasets)
 
     
-    return_string += "Top ensemble classifiers:\n"
-    for i in range(ENSEMBLES_TO_DISPLAY):
-        idx = std_ensemble_scores[-i-1]
-        return_string += "%s: %.1f"%(" + ".join(np.array(clf_names)[np.array(ensemble_ids[idx])]), ensemble_accs[idx]*100)
-        return_string += u"    (TA:%.1f%%)\n"%(ensemble_training_accs[idx]*100)
+        std_ensemble_scores = np.argsort(ensemble_accs)
+
+    
+        return_string += "Top ensemble classifiers:\n"
+        for i in range(ENSEMBLES_TO_DISPLAY):
+            idx = std_ensemble_scores[-i-1]
+            return_string += "%s: %.1f"%(" + ".join(np.array(clf_names)[np.array(ensemble_ids[idx])]), ensemble_accs[idx]*100)
+            return_string += u"    (TA:%.1f%%)\n"%(ensemble_training_accs[idx]*100)
+    except Exception as e:
+        return_string += str(e)
+        return_string += "\n"
+        return_string += str(traceback.format_exc())
 
     return return_string
 
 
-def write_results_to_doc_file(doc_file, results, dataset_language, clf_names, ensemble_scores, N_datasets, total_data_instances, t_start, ensemble_training_errors):
+def write_results_to_doc_file(doc_file, results, dataset_language, clf_names, ensemble_scores, N_datasets, total_data_instances, t_start, training_errors, ensemble_training_accs, args):
     """
     good for running tests over the weekend (using screen) and coming back to a nicely written file full of results!
     """
@@ -240,7 +258,11 @@ def write_results_to_doc_file(doc_file, results, dataset_language, clf_names, en
     df.write("="*100)
     df.write("\n")
     df.write("+"*100)
-    df.write("\nRun completed on %s, with following parameters:\nSAMPLE_SIZE: %s\nFEATURE_SELECT: %s\n"%(time.asctime(), SAMPLE_SIZE, FEATURE_SELECT))
+    #df.write("\nUSING ANALYZER!!!!!!\n")
+    df.write("\nRun completed on %s, with following parameters:\nSAMPLE_SIZE: %s\nFEATURE_SELECT: %s\n"\
+                 %(time.asctime(), SAMPLE_SIZE, FEATURE_SELECT))
+    df.write("CSV_FOLDER: %s\nFEATURES_FOLDER: %s\nuse_numeric_features: %s\n"\
+                 %(args.csv_folder, args.features_folder, args.use_numeric_features))
     df.write("Languages: %s\n"%LANGUAGES_TO_ITERATE_OVER)
     df.write(display_stats(results, dataset_language, clf_names, training_errors).encode('utf-8'))
     df.write(display_ensemble_accuracies(ensemble_scores, clf_names, N_datasets, ensemble_training_accs).encode('utf-8'))
@@ -258,6 +280,7 @@ def get_ensembles(ensemble_sizes, N_classifiers):
 
 
 def main():
+    print "Args: %s"%sys.argv
     args = get_args()
     t_start = time.time()
     dataset_language = [] # languages of each of the datasets in classfile_folder
@@ -294,21 +317,24 @@ def main():
             continue
         else:
             N_datasets +=1
-
+        
+        processed_flname = "%s/%s_feats/processed.csv"%(args.features_folder, language_code) # for numeric features
+        unprocessed_flname = "%s/%s_feats/unprocessed.csv"%(args.features_folder, language_code) # for linguistic features
             
         # note that, since we call the transform function directly, there is no need for
         # an outfile.  This saves time and space!
         # Note: below actually a list, not a file.
         class_file = transform(open('%s/%s'%(args.csv_folder, filename), 'r'), for_secondary = False).split('\n')
-        features_file = open("%s/%s_feats.csv"%(args.features_folder, language_code), 'r')
-        
+        features_file = open(unprocessed_flname, 'r')
+        numeric_features_file = open(processed_flname, 'r')
+
         print "Testing classifier accuracy for %s: "%language_name
         # test.get_classifier_accuracies returns a list of tuples of the form (name_of_classifier, pct_accuracy, runtime)
         #TODO: Make Thread (would require rewriting 'append' statements)
         accuracies, training_error = \
-            test.get_classifier_accuracies(class_file=class_file, features_file = features_file,\
+            test.get_classifier_accuracies(class_file=class_file, features_file = features_file, numeric_features_file = numeric_features_file,\
                                                verbose = args.verbose, feature_select = FEATURE_SELECT, sample_size = SAMPLE_SIZE,\
-                                               return_ensemble_materials=True, return_training_error = True)
+                                               return_ensemble_materials=True, return_training_error = True, use_numeric_features = args.use_numeric_features)
 
         accuracies = [tup for tup in accuracies if tup !=None] # In case a classifier throws an error, like QDA was doing.
         clf_prediction_probs = [tup[3] for tup in accuracies]
@@ -349,7 +375,7 @@ def main():
     print "Program took %s seconds to execute."%(time.time() - t_start)
     
     if args.doc_file:
-        write_results_to_doc_file(args.doc_file, results, dataset_language, clf_names, ensemble_scores, N_datasets, total_data_instances, t_start, training_errors)
+        write_results_to_doc_file(args.doc_file, results, dataset_language, clf_names, ensemble_scores, N_datasets, total_data_instances, t_start, training_errors, ensemble_training_accs, args)
 
 
 
